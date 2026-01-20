@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Racking Maintenance Visualizer',
+  title: 'RackCentral',
   description: '3D warehouse racking visualization with maintenance tracking',
 };
 

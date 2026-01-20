@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 
 // Database connection pool singleton
 let pool: Pool | null = null;
-let initialized = false;
+let initializationPromise: Promise<void> | null = null;
 
 export function getPool(): Pool {
   if (!pool) {
@@ -27,14 +27,19 @@ export function getPool(): Pool {
 
 // Ensure database is initialized (call this before any database operation)
 async function ensureInitialized(): Promise<void> {
-  if (!initialized) {
-    await initializeDatabase();
-    initialized = true;
+  if (!initializationPromise) {
+    initializationPromise = initializeDatabase().catch((error) => {
+      console.error('Database initialization failed:', error);
+      initializationPromise = null; // Allow retry on next call
+      throw error;
+    });
   }
+  await initializationPromise;
 }
 
 export async function initializeDatabase(): Promise<void> {
   const pool = getPool();
+  console.log('Initializing database tables...');
 
   // Users table
   await pool.query(`
@@ -130,13 +135,13 @@ export async function initializeDatabase(): Promise<void> {
     )
   `);
 
-  // Create indexes
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_maintenance_user ON maintenance_records(user_id);
-    CREATE INDEX IF NOT EXISTS idx_maintenance_component ON maintenance_records(user_id, component_id);
-    CREATE INDEX IF NOT EXISTS idx_health_user ON component_health(user_id);
-    CREATE INDEX IF NOT EXISTS idx_racks_user ON user_racks(user_id);
-  `);
+  // Create indexes (run separately to avoid issues)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_maintenance_user ON maintenance_records(user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_maintenance_component ON maintenance_records(user_id, component_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_health_user ON component_health(user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_racks_user ON user_racks(user_id)`);
+
+  console.log('Database tables initialized successfully');
 }
 
 // User operations
@@ -491,8 +496,10 @@ export async function saveRacks(userId: number, racks: RackData[]): Promise<void
     }
 
     await client.query('COMMIT');
+    console.log(`Saved ${racks.length} racks for user ${userId}`);
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('Error in saveRacks:', error);
     throw error;
   } finally {
     client.release();

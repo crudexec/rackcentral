@@ -1058,25 +1058,11 @@ export default function RackingMaintenanceVisualizer() {
         }
       }
 
-      // Floor marker for rack selection
-      const rackWidth = bays * bayWidth;
-      const markerGeometry = new THREE.PlaneGeometry(rackWidth + 0.5, bayDepth + 0.5);
-      const markerMaterial = new THREE.MeshStandardMaterial({
-        color: isSelectedRack ? 0x00ff88 : 0xffff00,
-        transparent: true,
-        opacity: isSelectedRack ? 0.4 : 0.2,
-      });
-      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
-      marker.rotation.x = -Math.PI / 2;
-      marker.position.set(rackWidth / 2 - bayWidth / 2, 0.02, 0);
-      marker.userData = { isRackMarker: true, rackId: rack.id };
-      rackGroup.add(marker);
-
       // Add rack to the scene
       allRacksGroupRef.current!.add(rackGroup);
     }
 
-  }, [racks, selectedRackId, selectedComponent, maintenanceRecords, componentHealth, viewMode, getDaysSinceInspection]);
+  }, [racks, selectedRackId, selectedComponent, maintenanceRecords, componentHealth, viewMode, getDaysSinceInspection, loadingData]);
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     if (!containerRef.current || !cameraRef.current || !allRacksGroupRef.current) return;
