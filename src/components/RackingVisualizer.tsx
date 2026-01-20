@@ -13,7 +13,8 @@ interface Config {
   bayWidth: number;
   bayDepth: number;
   levelHeight: number;
-  levelHeights: number[];  // per-level heights array
+  levelHeights?: number[];  // deprecated, kept for migration
+  openingHeights: number[][];  // 2D array: [bayIndex][levelIndex] = height
   beamColor: string;
   frameColor: string;
   palletColor: string;
@@ -75,7 +76,11 @@ const defaultConfig: Config = {
   bayWidth: 2.7,
   bayDepth: 1.2,
   levelHeight: 1.5,
-  levelHeights: [1.5, 1.5, 1.5, 1.5],  // one per level
+  openingHeights: [
+    [1.5, 1.5, 1.5, 1.5],  // Bay 0: 4 levels
+    [1.5, 1.5, 1.5, 1.5],  // Bay 1: 4 levels
+    [1.5, 1.5, 1.5, 1.5],  // Bay 2: 4 levels
+  ],
   beamColor: '#ff6b00',
   frameColor: '#4a90d9',
   palletColor: '#c4a574',
@@ -156,6 +161,7 @@ export default function RackingMaintenanceVisualizer() {
   const [showSettings, setShowSettings] = useState(false);
   const [showRackInspection, setShowRackInspection] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [selectedConfigBay, setSelectedConfigBay] = useState(0);  // For per-bay height config UI
   const [viewingRackDetails, setViewingRackDetails] = useState<string | null>(null);
   const [newRackInspection, setNewRackInspection] = useState({
     description: '',
@@ -233,14 +239,19 @@ export default function RackingMaintenanceVisualizer() {
         if (racksRes.ok) {
           const { racks: loadedRacks } = await racksRes.json();
           if (loadedRacks && loadedRacks.length > 0) {
-            // Migrate old configs without levelHeights
+            // Migrate old configs to openingHeights 2D array
             const migratedRacks = loadedRacks.map((rack: Rack) => {
-              if (!rack.config.levelHeights) {
+              if (!rack.config.openingHeights) {
+                // Check if we have old levelHeights (1D array)
+                const levelHeights = rack.config.levelHeights ||
+                  Array(rack.config.levels).fill(rack.config.levelHeight);
+                // Convert to 2D array: each bay gets the same level heights
+                const openingHeights = Array(rack.config.bays).fill(null).map(() => [...levelHeights]);
                 return {
                   ...rack,
                   config: {
                     ...rack.config,
-                    levelHeights: Array(rack.config.levels).fill(rack.config.levelHeight),
+                    openingHeights,
                   },
                 };
               }
@@ -485,8 +496,11 @@ export default function RackingMaintenanceVisualizer() {
 
     // Calculate rack center based on its position and dimensions
     const rackWidth = selectedRack.config.bays * selectedRack.config.bayWidth;
-    const heights = selectedRack.config.levelHeights || Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight);
-    const rackHeight = heights.reduce((a: number, b: number) => a + b, 0);
+    const openingHeights2D = selectedRack.config.openingHeights ||
+      Array(selectedRack.config.bays).fill(null).map(() => Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight));
+    const rackHeight = Math.max(...openingHeights2D.map((bayHeights: number[]) =>
+      bayHeights.reduce((a: number, b: number) => a + b, 0)
+    ));
 
     // Account for rack position and rotation
     const localCenterX = rackWidth / 2 - selectedRack.config.bayWidth / 2;
@@ -702,22 +716,43 @@ export default function RackingMaintenanceVisualizer() {
       rackGroup.rotation.y = rack.rotation;
       rackGroup.userData = { rackId: rack.id, rackName: rack.name };
 
-      const { bays, levels, bayWidth, bayDepth, levelHeight, levelHeights, beamColor, frameColor, palletColor, crossbarColor, wireDeckColor, showWireDecks, showPallets, palletFill } = rack.config;
+      const { bays, levels, bayWidth, bayDepth, levelHeight, openingHeights, beamColor, frameColor, palletColor, crossbarColor, wireDeckColor, showWireDecks, showPallets, palletFill } = rack.config;
       const isSelectedRack = rack.id === selectedRackId;
 
-      // Helper to get cumulative height up to a level
-      const heights = levelHeights || Array(levels).fill(levelHeight);
-      const getCumulativeHeight = (level: number): number => {
-        return heights.slice(0, level).reduce((sum, h) => sum + h, 0);
+      // Ensure openingHeights exists (2D array: [bay][level])
+      const heights2D = openingHeights || Array(bays).fill(null).map(() => Array(levels).fill(levelHeight));
+
+      // Helper to get cumulative height up to a level for a specific bay
+      const getCumulativeHeight = (bay: number, level: number): number => {
+        const bayHeights = heights2D[bay] || Array(levels).fill(levelHeight);
+        return bayHeights.slice(0, level).reduce((sum: number, h: number) => sum + h, 0);
       };
-      const getHeightAtLevel = (level: number): number => heights[level] || levelHeight;
+
+      // Get height of a specific opening (bay, level)
+      const getOpeningHeight = (bay: number, level: number): number => {
+        return heights2D[bay]?.[level] ?? levelHeight;
+      };
+
+      // Get total height for a bay
+      const getBayTotalHeight = (bay: number): number => {
+        const bayHeights = heights2D[bay] || Array(levels).fill(levelHeight);
+        return bayHeights.reduce((sum: number, h: number) => sum + h, 0);
+      };
 
       const uprightWidth = 0.08;
       const uprightDepth = 0.08;
-      const totalHeight = heights.reduce((sum, h) => sum + h, 0) + 0.3;
+      // Uprights need to be tall enough for the tallest adjacent bay
+      const maxTotalHeight = Math.max(...heights2D.map((bayHeights: number[]) =>
+        bayHeights.reduce((sum: number, h: number) => sum + h, 0)
+      )) + 0.3;
 
       for (let bay = 0; bay <= bays; bay++) {
         const xPos = bay * bayWidth;
+
+        // Calculate upright height based on tallest adjacent bay
+        const leftBayHeight = bay > 0 ? getBayTotalHeight(bay - 1) : 0;
+        const rightBayHeight = bay < bays ? getBayTotalHeight(bay) : 0;
+        const uprightHeight = Math.max(leftBayHeight, rightBayHeight) + 0.3;
 
         (['front', 'back'] as const).forEach((side) => {
           const componentId = `${rack.id}-upright-${bay}-${side}`;
@@ -725,10 +760,10 @@ export default function RackingMaintenanceVisualizer() {
           const isSelected = selectedComponent === componentId;
 
           const upright = new THREE.Mesh(
-            new THREE.BoxGeometry(uprightWidth, totalHeight, uprightDepth),
+            new THREE.BoxGeometry(uprightWidth, uprightHeight, uprightDepth),
             createMaterial(frameColor, componentId, isSelected, hasRecords)
           );
-          upright.position.set(xPos, totalHeight / 2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
+          upright.position.set(xPos, uprightHeight / 2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
           upright.castShadow = true;
           upright.userData = {
             componentId,
@@ -746,23 +781,26 @@ export default function RackingMaintenanceVisualizer() {
             const indicatorGeom = new THREE.SphereGeometry(0.1, 16, 16);
             const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xff6600 });
             const indicator = new THREE.Mesh(indicatorGeom, indicatorMat);
-            indicator.position.set(xPos, totalHeight + 0.2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
+            indicator.position.set(xPos, uprightHeight + 0.2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
             indicator.userData = { isIndicator: true, parentId: componentId };
             rackGroup.add(indicator);
           }
         });
 
-        for (let level = 0; level < levels; level++) {
+        // Cross braces on uprights - use the bay to the right's heights (or left for last upright)
+        const braceBay = bay < bays ? bay : bay - 1;
+        const braceLevels = heights2D[braceBay]?.length || levels;
+        for (let level = 0; level < braceLevels; level++) {
           const componentId = `${rack.id}-brace-${bay}-${level}`;
           const hasRecords = (maintenanceRecords[componentId]?.length || 0) > 0;
           const isSelected = selectedComponent === componentId;
 
-          const thisLevelHeight = getHeightAtLevel(level);
+          const thisLevelHeight = getOpeningHeight(braceBay, level);
           const braceGeometry = new THREE.CylinderGeometry(0.015, 0.015, Math.sqrt(thisLevelHeight * thisLevelHeight + bayDepth * bayDepth), 8);
           const brace = new THREE.Mesh(braceGeometry, createMaterial(frameColor, componentId, isSelected, hasRecords));
           const angle = Math.atan2(thisLevelHeight, bayDepth);
           brace.rotation.x = Math.PI / 2 - angle;
-          brace.position.set(xPos, getCumulativeHeight(level) + thisLevelHeight / 2 + 0.15, 0);
+          brace.position.set(xPos, getCumulativeHeight(braceBay, level) + thisLevelHeight / 2 + 0.15, 0);
           brace.userData = {
             componentId,
             type: 'brace',
@@ -776,17 +814,26 @@ export default function RackingMaintenanceVisualizer() {
           componentMapRef.current.set(componentId, brace);
         }
 
-        for (let level = 0; level <= levels; level++) {
+        // Connectors on uprights - need to handle different heights on left/right bays
+        const connectorLevels = Math.max(
+          bay > 0 ? (heights2D[bay - 1]?.length || levels) : 0,
+          bay < bays ? (heights2D[bay]?.length || levels) : 0
+        );
+        for (let level = 0; level <= connectorLevels; level++) {
           const componentId = `${rack.id}-connector-${bay}-${level}`;
           const hasRecords = (maintenanceRecords[componentId]?.length || 0) > 0;
           const isSelected = selectedComponent === componentId;
 
-          const yPos = getCumulativeHeight(level) + 0.15;
+          // Use average of adjacent bays' heights, or the one that exists
+          const leftY = bay > 0 ? getCumulativeHeight(bay - 1, level) : null;
+          const rightY = bay < bays ? getCumulativeHeight(bay, level) : null;
+          const yPos = (leftY !== null && rightY !== null) ? Math.max(leftY, rightY) : (leftY ?? rightY ?? 0);
+          const connectorY = yPos + 0.15;
           const connector = new THREE.Mesh(
             new THREE.BoxGeometry(uprightWidth, 0.04, bayDepth - uprightDepth),
             createMaterial(frameColor, componentId, isSelected, hasRecords)
           );
-          connector.position.set(xPos, yPos, 0);
+          connector.position.set(xPos, connectorY, 0);
           connector.userData = {
             componentId,
             type: 'connector',
@@ -805,9 +852,10 @@ export default function RackingMaintenanceVisualizer() {
       const beamDepthSize = 0.05;
 
       for (let bay = 0; bay < bays; bay++) {
-        for (let level = 1; level <= levels; level++) {
+        const bayLevels = heights2D[bay]?.length || levels;
+        for (let level = 1; level <= bayLevels; level++) {
           const xPos = bay * bayWidth + bayWidth / 2;
-          const yPos = getCumulativeHeight(level) + 0.1;
+          const yPos = getCumulativeHeight(bay, level) + 0.1;
 
           (['front', 'back'] as const).forEach((side) => {
             const componentId = `${rack.id}-beam-${bay}-${level}-${side}`;
@@ -1113,8 +1161,11 @@ export default function RackingMaintenanceVisualizer() {
     if (!selectedRack) return;
 
     const rackWidth = selectedRack.config.bays * selectedRack.config.bayWidth;
-    const focusHeights = selectedRack.config.levelHeights || Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight);
-    const rackHeight = focusHeights.reduce((a: number, b: number) => a + b, 0);
+    const focusHeights2D = selectedRack.config.openingHeights ||
+      Array(selectedRack.config.bays).fill(null).map(() => Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight));
+    const rackHeight = Math.max(...focusHeights2D.map((bayHeights: number[]) =>
+      bayHeights.reduce((a: number, b: number) => a + b, 0)
+    ));
     const localCenterX = rackWidth / 2 - selectedRack.config.bayWidth / 2;
     const cos = Math.cos(selectedRack.rotation);
     const sin = Math.sin(selectedRack.rotation);
@@ -1214,26 +1265,49 @@ export default function RackingMaintenanceVisualizer() {
   const updateConfig = (key: keyof Config, value: number | string | boolean) => {
     setConfig(prev => {
       const updated = { ...prev, [key]: value };
-      // Sync levelHeights array when levels count changes
-      if (key === 'levels' && typeof value === 'number') {
-        const currentHeights = prev.levelHeights || Array(prev.levels).fill(prev.levelHeight);
-        if (value > currentHeights.length) {
-          // Add more levels with default height
-          updated.levelHeights = [...currentHeights, ...Array(value - currentHeights.length).fill(prev.levelHeight)];
-        } else if (value < currentHeights.length) {
-          // Remove excess levels
-          updated.levelHeights = currentHeights.slice(0, value);
+      const currentOpenings = prev.openingHeights ||
+        Array(prev.bays).fill(null).map(() => Array(prev.levels).fill(prev.levelHeight));
+
+      // Sync openingHeights 2D array when bays or levels count changes
+      if (key === 'bays' && typeof value === 'number') {
+        if (value > currentOpenings.length) {
+          // Add more bays with default heights
+          const newBays = Array(value - currentOpenings.length).fill(null).map(() =>
+            Array(prev.levels).fill(prev.levelHeight)
+          );
+          updated.openingHeights = [...currentOpenings, ...newBays];
+        } else if (value < currentOpenings.length) {
+          // Remove excess bays
+          updated.openingHeights = currentOpenings.slice(0, value);
         }
+      } else if (key === 'levels' && typeof value === 'number') {
+        // Update each bay's level count
+        updated.openingHeights = currentOpenings.map(bayHeights => {
+          if (value > bayHeights.length) {
+            return [...bayHeights, ...Array(value - bayHeights.length).fill(prev.levelHeight)];
+          } else if (value < bayHeights.length) {
+            return bayHeights.slice(0, value);
+          }
+          return bayHeights;
+        });
       }
       return updated;
     });
   };
 
-  const updateLevelHeight = (levelIndex: number, value: number) => {
+  const updateOpeningHeight = (bayIndex: number, levelIndex: number, value: number) => {
     setConfig(prev => {
-      const newHeights = [...(prev.levelHeights || Array(prev.levels).fill(prev.levelHeight))];
-      newHeights[levelIndex] = value;
-      return { ...prev, levelHeights: newHeights };
+      const currentOpenings = prev.openingHeights ||
+        Array(prev.bays).fill(null).map(() => Array(prev.levels).fill(prev.levelHeight));
+      const newOpenings = currentOpenings.map((bayHeights, bIdx) => {
+        if (bIdx === bayIndex) {
+          const newBayHeights = [...bayHeights];
+          newBayHeights[levelIndex] = value;
+          return newBayHeights;
+        }
+        return bayHeights;
+      });
+      return { ...prev, openingHeights: newOpenings };
     });
   };
 
@@ -1762,10 +1836,12 @@ export default function RackingMaintenanceVisualizer() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string);
-        // Migration helper for levelHeights
+        // Migration helper for openingHeights
         const migrateConfig = (cfg: Config): Config => {
-          if (!cfg.levelHeights) {
-            return { ...cfg, levelHeights: Array(cfg.levels).fill(cfg.levelHeight) };
+          if (!cfg.openingHeights) {
+            const levelHeights = cfg.levelHeights || Array(cfg.levels).fill(cfg.levelHeight);
+            const openingHeights = Array(cfg.bays).fill(null).map(() => [...levelHeights]);
+            return { ...cfg, openingHeights };
           }
           return cfg;
         };
@@ -2052,7 +2128,13 @@ export default function RackingMaintenanceVisualizer() {
                         <div>
                           <p className="text-xs text-gray-400">Dimensions</p>
                           <p className="text-white font-medium">
-                            {(detailRack.config.bays * detailRack.config.bayWidth).toFixed(1)}m × {detailRack.config.bayDepth}m × {((detailRack.config.levelHeights || Array(detailRack.config.levels).fill(detailRack.config.levelHeight)).reduce((a: number, b: number) => a + b, 0)).toFixed(1)}m
+                            {(detailRack.config.bays * detailRack.config.bayWidth).toFixed(1)}m × {detailRack.config.bayDepth}m × {(() => {
+                              const openings = detailRack.config.openingHeights ||
+                                Array(detailRack.config.bays).fill(null).map(() =>
+                                  Array(detailRack.config.levels).fill(detailRack.config.levelHeight)
+                                );
+                              return Math.max(...openings.map((bay: number[]) => bay.reduce((a, b) => a + b, 0))).toFixed(1);
+                            })()}m
                           </p>
                         </div>
                         <div>
@@ -2205,23 +2287,48 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
-                          <span className="text-xs text-gray-400 block mb-2">Level Heights</span>
-                          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                            {(detailRack.config.levelHeights || Array(detailRack.config.levels).fill(detailRack.config.levelHeight)).map((height: number, idx: number) => (
-                              <div key={idx} className="flex items-center gap-2">
-                                <span className="text-xs text-gray-500 w-12">L{idx + 1}:</span>
-                                <input
-                                  type="range"
-                                  min="0.8"
-                                  max="3"
-                                  step="0.1"
-                                  value={height}
-                                  onChange={(e) => updateLevelHeight(idx, parseFloat(e.target.value))}
-                                  className="flex-1 accent-orange-500"
-                                />
-                                <span className="text-xs text-gray-400 w-12">{height.toFixed(1)}m</span>
-                              </div>
+                          <span className="text-xs text-gray-400 block mb-2">Opening Heights (per bay)</span>
+                          {/* Bay Selector */}
+                          <div className="flex gap-1 mb-2 flex-wrap">
+                            {Array.from({ length: detailRack.config.bays }, (_, i) => (
+                              <button
+                                key={i}
+                                onClick={() => setSelectedConfigBay(i)}
+                                className={`px-2 py-1 text-xs rounded transition-colors ${
+                                  selectedConfigBay === i
+                                    ? 'bg-orange-600 text-white'
+                                    : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                                }`}
+                              >
+                                Bay {i + 1}
+                              </button>
                             ))}
+                          </div>
+                          {/* Level Heights for Selected Bay */}
+                          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                            {(() => {
+                              const openings = detailRack.config.openingHeights ||
+                                Array(detailRack.config.bays).fill(null).map(() =>
+                                  Array(detailRack.config.levels).fill(detailRack.config.levelHeight)
+                                );
+                              const bayIdx = Math.min(selectedConfigBay, openings.length - 1);
+                              const bayHeights = openings[bayIdx] || Array(detailRack.config.levels).fill(detailRack.config.levelHeight);
+                              return bayHeights.map((height: number, levelIdx: number) => (
+                                <div key={levelIdx} className="flex items-center gap-2">
+                                  <span className="text-xs text-gray-500 w-12">L{levelIdx + 1}:</span>
+                                  <input
+                                    type="range"
+                                    min="0.8"
+                                    max="3"
+                                    step="0.1"
+                                    value={height}
+                                    onChange={(e) => updateOpeningHeight(bayIdx, levelIdx, parseFloat(e.target.value))}
+                                    className="flex-1 accent-orange-500"
+                                  />
+                                  <span className="text-xs text-gray-400 w-12">{height.toFixed(1)}m</span>
+                                </div>
+                              ));
+                            })()}
                           </div>
                         </div>
                       </div>
