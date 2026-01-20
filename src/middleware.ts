@@ -19,12 +19,16 @@ function getSessionToken(request: NextRequest): string | null {
 async function verifySessionToken(token: string): Promise<boolean> {
   try {
     const secret = process.env.JWT_SECRET;
-    if (!secret) return false;
+    if (!secret) {
+      console.error('Middleware: JWT_SECRET not available');
+      return false;
+    }
 
     const secretKey = new TextEncoder().encode(secret);
     await jwtVerify(token, secretKey);
     return true;
-  } catch {
+  } catch (error) {
+    console.error('Middleware: Token verification failed', error);
     return false;
   }
 }
@@ -51,6 +55,7 @@ export async function middleware(request: NextRequest) {
   const token = getSessionToken(request);
 
   if (!token) {
+    console.log('Middleware: No token for', pathname);
     // No token - redirect to login for page routes, return 401 for API routes
     if (pathname.startsWith('/api/')) {
       return NextResponse.json(
@@ -65,6 +70,7 @@ export async function middleware(request: NextRequest) {
   const isValid = await verifySessionToken(token);
 
   if (!isValid) {
+    console.log('Middleware: Invalid token for', pathname);
     // Invalid token - redirect to login for page routes, return 401 for API routes
     if (pathname.startsWith('/api/')) {
       return NextResponse.json(
