@@ -444,6 +444,20 @@ export default function RackingMaintenanceVisualizer() {
     };
   }, [loadingData]);
 
+  // Handle panel collapse/expand - update renderer size after transition
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!containerRef.current || !rendererRef.current || !cameraRef.current) return;
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+      cameraRef.current.aspect = width / height;
+      cameraRef.current.updateProjectionMatrix();
+      rendererRef.current.setSize(width, height);
+    }, 310); // Wait for CSS transition (300ms) to complete
+
+    return () => clearTimeout(timer);
+  }, [panelCollapsed]);
+
   // Store camera target separately so it only updates on rack selection change
   const [cameraTarget, setCameraTarget] = useState({ x: 0, y: 3, z: 0 });
 
