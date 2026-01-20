@@ -6,11 +6,20 @@ let initialized = false;
 
 export function getPool(): Pool {
   if (!pool) {
+    let connectionString = process.env.DATABASE_URL || '';
+
+    // Check if SSL is required, then remove sslmode from URL to avoid conflicts
+    const requiresSsl = connectionString.includes('sslmode=require') ||
+                        connectionString.includes('sslmode=prefer');
+
+    // Remove sslmode parameter from connection string to handle it manually
+    connectionString = connectionString.replace(/[?&]sslmode=[^&]*/g, '');
+    // Clean up any leftover ? at the end
+    connectionString = connectionString.replace(/\?$/, '');
+
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL?.includes('sslmode=require')
-        ? { rejectUnauthorized: false }
-        : false,
+      connectionString,
+      ssl: requiresSsl ? { rejectUnauthorized: false } : false,
     });
   }
   return pool;
