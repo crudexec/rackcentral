@@ -13,6 +13,7 @@ interface Config {
   bayWidth: number;
   bayDepth: number;
   levelHeight: number;
+  levelHeights: number[];  // per-level heights array
   beamColor: string;
   frameColor: string;
   palletColor: string;
@@ -74,6 +75,7 @@ const defaultConfig: Config = {
   bayWidth: 2.7,
   bayDepth: 1.2,
   levelHeight: 1.5,
+  levelHeights: [1.5, 1.5, 1.5, 1.5],  // one per level
   beamColor: '#ff6b00',
   frameColor: '#4a90d9',
   palletColor: '#c4a574',
@@ -231,8 +233,21 @@ export default function RackingMaintenanceVisualizer() {
         if (racksRes.ok) {
           const { racks: loadedRacks } = await racksRes.json();
           if (loadedRacks && loadedRacks.length > 0) {
-            setRacks(loadedRacks);
-            setSelectedRackId(loadedRacks[0].id);
+            // Migrate old configs without levelHeights
+            const migratedRacks = loadedRacks.map((rack: Rack) => {
+              if (!rack.config.levelHeights) {
+                return {
+                  ...rack,
+                  config: {
+                    ...rack.config,
+                    levelHeights: Array(rack.config.levels).fill(rack.config.levelHeight),
+                  },
+                };
+              }
+              return rack;
+            });
+            setRacks(migratedRacks);
+            setSelectedRackId(migratedRacks[0].id);
           }
         }
 
@@ -470,7 +485,8 @@ export default function RackingMaintenanceVisualizer() {
 
     // Calculate rack center based on its position and dimensions
     const rackWidth = selectedRack.config.bays * selectedRack.config.bayWidth;
-    const rackHeight = selectedRack.config.levels * selectedRack.config.levelHeight;
+    const heights = selectedRack.config.levelHeights || Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight);
+    const rackHeight = heights.reduce((a: number, b: number) => a + b, 0);
 
     // Account for rack position and rotation
     const localCenterX = rackWidth / 2 - selectedRack.config.bayWidth / 2;
@@ -686,12 +702,19 @@ export default function RackingMaintenanceVisualizer() {
       rackGroup.rotation.y = rack.rotation;
       rackGroup.userData = { rackId: rack.id, rackName: rack.name };
 
-      const { bays, levels, bayWidth, bayDepth, levelHeight, beamColor, frameColor, palletColor, crossbarColor, wireDeckColor, showWireDecks, showPallets, palletFill } = rack.config;
+      const { bays, levels, bayWidth, bayDepth, levelHeight, levelHeights, beamColor, frameColor, palletColor, crossbarColor, wireDeckColor, showWireDecks, showPallets, palletFill } = rack.config;
       const isSelectedRack = rack.id === selectedRackId;
+
+      // Helper to get cumulative height up to a level
+      const heights = levelHeights || Array(levels).fill(levelHeight);
+      const getCumulativeHeight = (level: number): number => {
+        return heights.slice(0, level).reduce((sum, h) => sum + h, 0);
+      };
+      const getHeightAtLevel = (level: number): number => heights[level] || levelHeight;
 
       const uprightWidth = 0.08;
       const uprightDepth = 0.08;
-      const totalHeight = levels * levelHeight + 0.3;
+      const totalHeight = heights.reduce((sum, h) => sum + h, 0) + 0.3;
 
       for (let bay = 0; bay <= bays; bay++) {
         const xPos = bay * bayWidth;
@@ -734,11 +757,12 @@ export default function RackingMaintenanceVisualizer() {
           const hasRecords = (maintenanceRecords[componentId]?.length || 0) > 0;
           const isSelected = selectedComponent === componentId;
 
-          const braceGeometry = new THREE.CylinderGeometry(0.015, 0.015, Math.sqrt(levelHeight * levelHeight + bayDepth * bayDepth), 8);
+          const thisLevelHeight = getHeightAtLevel(level);
+          const braceGeometry = new THREE.CylinderGeometry(0.015, 0.015, Math.sqrt(thisLevelHeight * thisLevelHeight + bayDepth * bayDepth), 8);
           const brace = new THREE.Mesh(braceGeometry, createMaterial(frameColor, componentId, isSelected, hasRecords));
-          const angle = Math.atan2(levelHeight, bayDepth);
+          const angle = Math.atan2(thisLevelHeight, bayDepth);
           brace.rotation.x = Math.PI / 2 - angle;
-          brace.position.set(xPos, level * levelHeight + levelHeight / 2 + 0.15, 0);
+          brace.position.set(xPos, getCumulativeHeight(level) + thisLevelHeight / 2 + 0.15, 0);
           brace.userData = {
             componentId,
             type: 'brace',
@@ -757,7 +781,7 @@ export default function RackingMaintenanceVisualizer() {
           const hasRecords = (maintenanceRecords[componentId]?.length || 0) > 0;
           const isSelected = selectedComponent === componentId;
 
-          const yPos = level * levelHeight + 0.15;
+          const yPos = getCumulativeHeight(level) + 0.15;
           const connector = new THREE.Mesh(
             new THREE.BoxGeometry(uprightWidth, 0.04, bayDepth - uprightDepth),
             createMaterial(frameColor, componentId, isSelected, hasRecords)
@@ -783,7 +807,7 @@ export default function RackingMaintenanceVisualizer() {
       for (let bay = 0; bay < bays; bay++) {
         for (let level = 1; level <= levels; level++) {
           const xPos = bay * bayWidth + bayWidth / 2;
-          const yPos = level * levelHeight + 0.1;
+          const yPos = getCumulativeHeight(level) + 0.1;
 
           (['front', 'back'] as const).forEach((side) => {
             const componentId = `${rack.id}-beam-${bay}-${level}-${side}`;
@@ -1089,7 +1113,8 @@ export default function RackingMaintenanceVisualizer() {
     if (!selectedRack) return;
 
     const rackWidth = selectedRack.config.bays * selectedRack.config.bayWidth;
-    const rackHeight = selectedRack.config.levels * selectedRack.config.levelHeight;
+    const focusHeights = selectedRack.config.levelHeights || Array(selectedRack.config.levels).fill(selectedRack.config.levelHeight);
+    const rackHeight = focusHeights.reduce((a: number, b: number) => a + b, 0);
     const localCenterX = rackWidth / 2 - selectedRack.config.bayWidth / 2;
     const cos = Math.cos(selectedRack.rotation);
     const sin = Math.sin(selectedRack.rotation);
@@ -1187,7 +1212,29 @@ export default function RackingMaintenanceVisualizer() {
   };
 
   const updateConfig = (key: keyof Config, value: number | string | boolean) => {
-    setConfig(prev => ({ ...prev, [key]: value }));
+    setConfig(prev => {
+      const updated = { ...prev, [key]: value };
+      // Sync levelHeights array when levels count changes
+      if (key === 'levels' && typeof value === 'number') {
+        const currentHeights = prev.levelHeights || Array(prev.levels).fill(prev.levelHeight);
+        if (value > currentHeights.length) {
+          // Add more levels with default height
+          updated.levelHeights = [...currentHeights, ...Array(value - currentHeights.length).fill(prev.levelHeight)];
+        } else if (value < currentHeights.length) {
+          // Remove excess levels
+          updated.levelHeights = currentHeights.slice(0, value);
+        }
+      }
+      return updated;
+    });
+  };
+
+  const updateLevelHeight = (levelIndex: number, value: number) => {
+    setConfig(prev => {
+      const newHeights = [...(prev.levelHeights || Array(prev.levels).fill(prev.levelHeight))];
+      newHeights[levelIndex] = value;
+      return { ...prev, levelHeights: newHeights };
+    });
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1715,14 +1762,25 @@ export default function RackingMaintenanceVisualizer() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string);
+        // Migration helper for levelHeights
+        const migrateConfig = (cfg: Config): Config => {
+          if (!cfg.levelHeights) {
+            return { ...cfg, levelHeights: Array(cfg.levels).fill(cfg.levelHeight) };
+          }
+          return cfg;
+        };
         // Support both old format (config) and new format (racks)
         if (data.racks && Array.isArray(data.racks)) {
-          setRacks(data.racks);
-          setSelectedRackId(data.racks[0]?.id || 'rack-1');
+          const migratedRacks = data.racks.map((rack: Rack) => ({
+            ...rack,
+            config: migrateConfig(rack.config),
+          }));
+          setRacks(migratedRacks);
+          setSelectedRackId(migratedRacks[0]?.id || 'rack-1');
         } else if (data.config) {
           // Legacy format - convert single config to rack
           const newRack = createNewRack('rack-1', 'Rack 1', 0, 0);
-          newRack.config = data.config;
+          newRack.config = migrateConfig(data.config);
           setRacks([newRack]);
           setSelectedRackId('rack-1');
         }
@@ -1994,7 +2052,7 @@ export default function RackingMaintenanceVisualizer() {
                         <div>
                           <p className="text-xs text-gray-400">Dimensions</p>
                           <p className="text-white font-medium">
-                            {(detailRack.config.bays * detailRack.config.bayWidth).toFixed(1)}m × {detailRack.config.bayDepth}m × {(detailRack.config.levels * detailRack.config.levelHeight).toFixed(1)}m
+                            {(detailRack.config.bays * detailRack.config.bayWidth).toFixed(1)}m × {detailRack.config.bayDepth}m × {((detailRack.config.levelHeights || Array(detailRack.config.levels).fill(detailRack.config.levelHeight)).reduce((a: number, b: number) => a + b, 0)).toFixed(1)}m
                           </p>
                         </div>
                         <div>
@@ -2147,16 +2205,24 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
-                          <span className="text-xs text-gray-400">Level Height: {detailRack.config.levelHeight.toFixed(1)}m</span>
-                          <input
-                            type="range"
-                            min="1"
-                            max="3"
-                            step="0.1"
-                            value={detailRack.config.levelHeight}
-                            onChange={(e) => updateConfig('levelHeight', parseFloat(e.target.value))}
-                            className="w-full accent-orange-500"
-                          />
+                          <span className="text-xs text-gray-400 block mb-2">Level Heights</span>
+                          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                            {(detailRack.config.levelHeights || Array(detailRack.config.levels).fill(detailRack.config.levelHeight)).map((height: number, idx: number) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span className="text-xs text-gray-500 w-12">L{idx + 1}:</span>
+                                <input
+                                  type="range"
+                                  min="0.8"
+                                  max="3"
+                                  step="0.1"
+                                  value={height}
+                                  onChange={(e) => updateLevelHeight(idx, parseFloat(e.target.value))}
+                                  className="flex-1 accent-orange-500"
+                                />
+                                <span className="text-xs text-gray-400 w-12">{height.toFixed(1)}m</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     </div>
