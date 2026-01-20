@@ -23,8 +23,8 @@ yarn-error.log*
 # Local env files
 .env*.local
 
-# Database
-data/
+# Database (only root data folder, not src/app/api/data)
+/data/
 
 # Vercel
 .vercel
