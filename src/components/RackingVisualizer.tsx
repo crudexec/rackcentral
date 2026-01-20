@@ -3,7 +3,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import * as THREE from 'three';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import AnnotationEditor from './AnnotationEditor';
 
 interface Config {
@@ -331,69 +332,6 @@ export default function RackingMaintenanceVisualizer() {
       console.error('Logout failed:', error);
     }
   };
-
-  // Analytics calculations
-  const analytics = useMemo(() => {
-    const allRecords: (MaintenanceRecord & { componentId: string })[] = [];
-    Object.entries(maintenanceRecords).forEach(([componentId, records]) => {
-      records.forEach(record => allRecords.push({ ...record, componentId }));
-    });
-
-    const byType = maintenanceTypes.map(type => ({
-      name: type.label.split(' ')[1],
-      value: allRecords.filter(r => r.type === type.value).length,
-      color: type.color,
-    })).filter(t => t.value > 0);
-
-    const byStatus = statusTypes.map(status => ({
-      name: status.label,
-      value: allRecords.filter(r => r.status === status.value).length,
-      color: status.color,
-    })).filter(s => s.value > 0);
-
-    const last7Days = [];
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date();
-      date.setDate(date.getDate() - i);
-      const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const dayRecords = allRecords.filter(r => {
-        const recordDate = new Date(r.timestamp);
-        return recordDate.toDateString() === date.toDateString();
-      });
-      last7Days.push({ date: dateStr, count: dayRecords.length });
-    }
-
-    const componentCounts: Record<string, number> = {};
-    allRecords.forEach(r => {
-      componentCounts[r.componentId] = (componentCounts[r.componentId] || 0) + 1;
-    });
-    const topComponents = Object.entries(componentCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([id, count]) => {
-        const component = componentMapRef.current.get(id);
-        const userData = component?.userData as ComponentUserData | undefined;
-        return { name: userData?.label || id, count };
-      });
-
-    const healthCounts = healthStatuses.map(h => ({
-      name: h.label,
-      value: Object.values(componentHealth).filter(ch => ch === h.value).length,
-      color: h.color,
-    })).filter(h => h.value > 0);
-
-    return {
-      totalRecords: allRecords.length,
-      totalComponents: componentMapRef.current.size,
-      componentsWithRecords: Object.keys(maintenanceRecords).length,
-      byType,
-      byStatus,
-      last7Days,
-      topComponents,
-      healthCounts,
-      pendingCount: allRecords.filter(r => r.status === 'pending' || r.status === 'in_progress').length,
-    };
-  }, [maintenanceRecords, componentHealth]);
 
   // Initialize Three.js scene
   useEffect(() => {
@@ -1503,6 +1441,181 @@ export default function RackingMaintenanceVisualizer() {
     });
   };
 
+  const generatePDFReport = useCallback(() => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    let yPos = 20;
+
+    // Compute all records for the report
+    const allRecordsForReport: (MaintenanceRecord & { componentId: string })[] = [];
+    Object.entries(maintenanceRecords).forEach(([componentId, records]) => {
+      records.forEach(record => {
+        allRecordsForReport.push({ ...record, componentId });
+      });
+    });
+    allRecordsForReport.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    // Header
+    doc.setFontSize(20);
+    doc.setTextColor(249, 115, 22); // Orange color
+    doc.text('RackCentral', pageWidth / 2, yPos, { align: 'center' });
+    yPos += 8;
+
+    doc.setFontSize(14);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Inspection & Maintenance Report', pageWidth / 2, yPos, { align: 'center' });
+    yPos += 10;
+
+    doc.setFontSize(10);
+    doc.setTextColor(100, 100, 100);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
+    yPos += 15;
+
+    // Summary Section
+    doc.setFontSize(14);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Summary', 14, yPos);
+    yPos += 8;
+
+    const totalRacks = racks.length;
+    const totalComponents = componentMapRef.current.size;
+    const totalRecords = allRecordsForReport.length;
+    const healthCounts = healthStatuses.reduce((acc, status) => {
+      acc[status.label] = Object.values(componentHealth).filter(h => h === status.value).length;
+      return acc;
+    }, {} as Record<string, number>);
+
+    doc.setFontSize(10);
+    doc.text(`Total Racks: ${totalRacks}`, 14, yPos);
+    yPos += 6;
+    doc.text(`Total Components: ${totalComponents}`, 14, yPos);
+    yPos += 6;
+    doc.text(`Total Maintenance Records: ${totalRecords}`, 14, yPos);
+    yPos += 10;
+
+    // Health Status Summary
+    doc.setFontSize(12);
+    doc.text('Component Health Overview:', 14, yPos);
+    yPos += 6;
+
+    doc.setFontSize(10);
+    healthStatuses.forEach(status => {
+      const count = healthCounts[status.label] || 0;
+      if (count > 0) {
+        doc.text(`  ${status.label}: ${count} components`, 14, yPos);
+        yPos += 5;
+      }
+    });
+    yPos += 10;
+
+    // Maintenance Records Table
+    if (allRecordsForReport.length > 0) {
+      doc.setFontSize(14);
+      doc.text('Maintenance Records', 14, yPos);
+      yPos += 5;
+
+      const tableData = allRecordsForReport.map(record => {
+          const component = componentMapRef.current.get(record.componentId);
+          const userData = component?.userData as ComponentUserData | undefined;
+          const typeInfo = maintenanceTypes.find(t => t.value === record.type);
+          const statusInfo = statusTypes.find(s => s.value === record.status);
+          const dateStr = new Date(record.timestamp).toLocaleDateString('en-US', {
+            year: 'numeric', month: 'short', day: 'numeric'
+          });
+
+          return [
+            dateStr,
+            userData?.label || record.componentId,
+            typeInfo?.label.replace(/^[^\s]+\s/, '') || record.type,
+            record.description.substring(0, 40) + (record.description.length > 40 ? '...' : ''),
+            statusInfo?.label || record.status,
+            record.technician || '-'
+          ];
+        });
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [['Date', 'Component', 'Type', 'Description', 'Status', 'Technician']],
+        body: tableData,
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [249, 115, 22], textColor: 255 },
+        alternateRowStyles: { fillColor: [245, 245, 245] },
+        columnStyles: {
+          0: { cellWidth: 30 },
+          1: { cellWidth: 35 },
+          2: { cellWidth: 25 },
+          3: { cellWidth: 50 },
+          4: { cellWidth: 22 },
+          5: { cellWidth: 25 },
+        },
+      });
+
+      yPos = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+    }
+
+    // Component Health Details (new page if needed)
+    const componentsWithHealth = Object.entries(componentHealth).filter(([, status]) => status !== 'good');
+    if (componentsWithHealth.length > 0) {
+      if (yPos > 250) {
+        doc.addPage();
+        yPos = 20;
+      }
+
+      doc.setFontSize(14);
+      doc.text('Components Requiring Attention', 14, yPos);
+      yPos += 5;
+
+      const healthTableData = componentsWithHealth.map(([componentId, status]) => {
+        const component = componentMapRef.current.get(componentId);
+        const userData = component?.userData as ComponentUserData | undefined;
+        const statusInfo = healthStatuses.find(h => h.value === status);
+        const records = maintenanceRecords[componentId] || [];
+        const lastRecord = records.sort((a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )[0];
+        const lastInspectionDate = lastRecord
+          ? new Date(lastRecord.timestamp).toLocaleDateString('en-US', {
+              year: 'numeric', month: 'short', day: 'numeric'
+            })
+          : 'No records';
+
+        return [
+          userData?.label || componentId,
+          statusInfo?.label || status,
+          lastInspectionDate,
+          records.length.toString()
+        ];
+      });
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [['Component', 'Health Status', 'Last Inspection', 'Total Records']],
+        body: healthTableData,
+        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [249, 115, 22], textColor: 255 },
+        alternateRowStyles: { fillColor: [245, 245, 245] },
+      });
+    }
+
+    // Footer
+    const pageCount = doc.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        `Page ${i} of ${pageCount} - RackCentral Report`,
+        pageWidth / 2,
+        doc.internal.pageSize.getHeight() - 10,
+        { align: 'center' }
+      );
+    }
+
+    // Save the PDF
+    const fileName = `RackCentral_Report_${new Date().toISOString().split('T')[0]}.pdf`;
+    doc.save(fileName);
+  }, [racks, componentHealth, maintenanceRecords]);
+
   const exportData = () => {
     const data = {
       version: '2.0',
@@ -1681,7 +1794,7 @@ export default function RackingMaintenanceVisualizer() {
 
         {/* Tabs */}
         <div className="flex border-b border-gray-700 flex-wrap">
-          {['home', 'timeline', 'component', 'analytics'].map((tab) => (
+          {['home', 'timeline', 'component'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -1692,7 +1805,6 @@ export default function RackingMaintenanceVisualizer() {
               {tab === 'home' && '🏠 Home'}
               {tab === 'timeline' && `📋 Timeline (${allRecords.length})`}
               {tab === 'component' && '🔍 Component'}
-              {tab === 'analytics' && '📊 Analytics'}
             </button>
           ))}
         </div>
@@ -2625,132 +2737,6 @@ export default function RackingMaintenanceVisualizer() {
             </div>
           )}
 
-          {/* Analytics Tab */}
-          {activeTab === 'analytics' && (
-            <div className="space-y-4">
-              <h1 className="text-xl font-bold text-orange-400">📊 Analytics Dashboard</h1>
-              
-              {/* Summary Cards */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <p className="text-2xl font-bold text-white">{analytics.totalRecords}</p>
-                  <p className="text-xs text-gray-400">Total Records</p>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <p className="text-2xl font-bold text-orange-400">{analytics.pendingCount}</p>
-                  <p className="text-xs text-gray-400">Pending Actions</p>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <p className="text-2xl font-bold text-white">{analytics.componentsWithRecords}</p>
-                  <p className="text-xs text-gray-400">Components Tracked</p>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <p className="text-2xl font-bold text-white">{analytics.totalComponents}</p>
-                  <p className="text-xs text-gray-400">Total Components</p>
-                </div>
-              </div>
-
-              {/* Records by Type */}
-              {analytics.byType.length > 0 && (
-                <div className="bg-gray-700 rounded-lg p-3">
-                  <h3 className="text-sm font-semibold text-gray-300 mb-3">Records by Type</h3>
-                  <ResponsiveContainer width="100%" height={150}>
-                    <PieChart>
-                      <Pie
-                        data={analytics.byType}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        outerRadius={50}
-                        label={({ name, value }) => `${name}: ${value}`}
-                        labelLine={false}
-                      >
-                        {analytics.byType.map((entry, index) => (
-                          <Cell key={index} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* Activity Over Time */}
-              <div className="bg-gray-700 rounded-lg p-3">
-                <h3 className="text-sm font-semibold text-gray-300 mb-3">Activity (Last 7 Days)</h3>
-                <ResponsiveContainer width="100%" height={120}>
-                  <LineChart data={analytics.last7Days}>
-                    <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#374151', border: 'none' }}
-                      labelStyle={{ color: '#fff' }}
-                    />
-                    <Line type="monotone" dataKey="count" stroke="#f97316" strokeWidth={2} dot={{ fill: '#f97316' }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Most Maintained */}
-              {analytics.topComponents.length > 0 && (
-                <div className="bg-gray-700 rounded-lg p-3">
-                  <h3 className="text-sm font-semibold text-gray-300 mb-3">Most Maintained Components</h3>
-                  <ResponsiveContainer width="100%" height={120}>
-                    <BarChart data={analytics.topComponents} layout="vertical">
-                      <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                      <YAxis type="category" dataKey="name" tick={{ fill: '#9ca3af', fontSize: 9 }} width={100} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#374151', border: 'none' }}
-                        labelStyle={{ color: '#fff' }}
-                      />
-                      <Bar dataKey="count" fill="#3b82f6" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* Health Distribution */}
-              {analytics.healthCounts.length > 0 && (
-                <div className="bg-gray-700 rounded-lg p-3">
-                  <h3 className="text-sm font-semibold text-gray-300 mb-3">Health Distribution</h3>
-                  <ResponsiveContainer width="100%" height={100}>
-                    <BarChart data={analytics.healthCounts}>
-                      <XAxis dataKey="name" tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                      <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#374151', border: 'none' }}
-                        labelStyle={{ color: '#fff' }}
-                      />
-                      <Bar dataKey="value">
-                        {analytics.healthCounts.map((entry, index) => (
-                          <Cell key={index} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* Records by Status */}
-              {analytics.byStatus.length > 0 && (
-                <div className="bg-gray-700 rounded-lg p-3">
-                  <h3 className="text-sm font-semibold text-gray-300 mb-2">Status Breakdown</h3>
-                  <div className="space-y-2">
-                    {analytics.byStatus.map((status) => (
-                      <div key={status.name} className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: status.color }} />
-                          <span className="text-sm text-gray-300">{status.name}</span>
-                        </div>
-                        <span className="text-sm font-medium text-white">{status.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
 
@@ -2952,6 +2938,19 @@ export default function RackingMaintenanceVisualizer() {
             <h2 className="text-xl font-bold text-orange-400 mb-4">💾 Save / Load Data</h2>
             
             <div className="space-y-4">
+              <div className="bg-gray-700 rounded-lg p-4">
+                <h3 className="font-semibold text-blue-300 mb-2">Generate Report</h3>
+                <p className="text-sm text-gray-400 mb-3">
+                  Generate a PDF report with inspection and maintenance records.
+                </p>
+                <button
+                  onClick={generatePDFReport}
+                  className="w-full bg-orange-600 hover:bg-orange-500 text-white py-2 px-4 rounded font-medium transition-colors"
+                >
+                  📄 Download PDF Report
+                </button>
+              </div>
+
               <div className="bg-gray-700 rounded-lg p-4">
                 <h3 className="font-semibold text-blue-300 mb-2">Export Data</h3>
                 <p className="text-sm text-gray-400 mb-3">
