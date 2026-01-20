@@ -129,7 +129,7 @@ export default function RackingMaintenanceVisualizer() {
   const [isDragging, setIsDragging] = useState(false);
   const [previousMousePosition, setPreviousMousePosition] = useState({ x: 0, y: 0 });
   const [cameraAngle, setCameraAngle] = useState({ theta: Math.PI / 4, phi: Math.PI / 4 });
-  const [cameraDistance, setCameraDistance] = useState(25);
+  const [cameraDistance, setCameraDistance] = useState(18);
 
   const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
@@ -271,11 +271,16 @@ export default function RackingMaintenanceVisualizer() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ racks }),
         });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('Save failed:', response.status, errorData);
+        }
         setSavingStatus(response.ok ? 'saved' : 'error');
 
         // Reset to idle after 2 seconds
         setTimeout(() => setSavingStatus('idle'), 2000);
-      } catch {
+      } catch (error) {
+        console.error('Save error:', error);
         setSavingStatus('error');
       }
     }, 1000);
@@ -503,7 +508,7 @@ export default function RackingMaintenanceVisualizer() {
   // Store camera target separately so it only updates on rack selection change
   const [cameraTarget, setCameraTarget] = useState({ x: 0, y: 3, z: 0 });
 
-  // Update camera target only when selecting a different rack
+  // Update camera target when rack selection changes or racks load
   useEffect(() => {
     if (!selectedRack) {
       setCameraTarget({ x: 0, y: 3, z: 0 });
@@ -524,7 +529,7 @@ export default function RackingMaintenanceVisualizer() {
       y: rackHeight / 2,
       z: selectedRack.position.z + localCenterX * sin,
     });
-  }, [selectedRackId]); // Only update when rack selection changes
+  }, [selectedRackId, selectedRack]); // Update when rack selection changes or rack data loads
 
   // Update camera position based on angle, distance, and target
   useEffect(() => {
