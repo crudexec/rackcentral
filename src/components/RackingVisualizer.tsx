@@ -153,6 +153,7 @@ export default function RackingMaintenanceVisualizer() {
   const [savingAnnotation, setSavingAnnotation] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showRackInspection, setShowRackInspection] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [viewingRackDetails, setViewingRackDetails] = useState<string | null>(null);
   const [newRackInspection, setNewRackInspection] = useState({
     description: '',
@@ -1812,7 +1813,7 @@ export default function RackingMaintenanceVisualizer() {
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* Control Panel */}
-      <div className="w-96 bg-gray-800 flex flex-col flex-shrink-0">
+      <div className={`${panelCollapsed ? 'w-0' : 'w-96'} bg-gray-800 flex flex-col flex-shrink-0 transition-all duration-300 overflow-hidden`}>
         {/* User Header */}
         <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-700">
           <div className="flex items-center gap-2">
@@ -2811,9 +2812,18 @@ export default function RackingMaintenanceVisualizer() {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         />
-        
+
+        {/* Panel Toggle Button */}
+        <button
+          onClick={() => setPanelCollapsed(!panelCollapsed)}
+          className="absolute top-4 left-4 bg-gray-800 bg-opacity-90 hover:bg-gray-700 p-2 rounded-lg transition-colors z-10"
+          title={panelCollapsed ? 'Show Panel' : 'Hide Panel'}
+        >
+          {panelCollapsed ? '☰' : '✕'}
+        </button>
+
         {/* Camera Presets */}
-        <div className="absolute top-4 left-4 flex gap-1">
+        <div className={`absolute top-4 ${panelCollapsed ? 'left-14' : 'left-4'} flex gap-1 transition-all duration-300`}>
           {cameraPresets.map((preset) => (
             <button
               key={preset.name}
