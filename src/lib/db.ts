@@ -1,34 +1,46 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+import { Pool } from 'pg';
 
-// Database instance singleton
-let db: Database.Database | null = null;
+// Database connection pool singleton
+let pool: Pool | null = null;
+let initialized = false;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    const dbPath = path.join(process.cwd(), 'data', 'racking.db');
-    db = new Database(dbPath);
-    db.pragma('foreign_keys = ON');
-    initializeDatabase(db);
+export function getPool(): Pool {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL?.includes('sslmode=require')
+        ? { rejectUnauthorized: false }
+        : false,
+    });
   }
-  return db;
+  return pool;
 }
 
-function initializeDatabase(database: Database.Database): void {
+// Ensure database is initialized (call this before any database operation)
+async function ensureInitialized(): Promise<void> {
+  if (!initialized) {
+    await initializeDatabase();
+    initialized = true;
+  }
+}
+
+export async function initializeDatabase(): Promise<void> {
+  const pool = getPool();
+
   // Users table
-  database.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     )
   `);
 
   // User configurations
-  database.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS user_configs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL UNIQUE,
       bays INTEGER DEFAULT 3,
       levels INTEGER DEFAULT 4,
@@ -43,16 +55,16 @@ function initializeDatabase(database: Database.Database): void {
       show_wire_decks INTEGER DEFAULT 1,
       show_pallets INTEGER DEFAULT 0,
       pallet_fill INTEGER DEFAULT 70,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
 
   // Maintenance records
-  database.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS maintenance_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL,
       component_id TEXT NOT NULL,
       type TEXT NOT NULL,
@@ -61,35 +73,28 @@ function initializeDatabase(database: Database.Database): void {
       status TEXT NOT NULL,
       timestamp TEXT NOT NULL,
       images TEXT DEFAULT '[]',
-      created_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
 
-  // Migration: Add images column if it doesn't exist (for existing databases)
-  try {
-    database.exec(`ALTER TABLE maintenance_records ADD COLUMN images TEXT DEFAULT '[]'`);
-  } catch {
-    // Column already exists, ignore error
-  }
-
   // Component health
-  database.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS component_health (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL,
       component_id TEXT NOT NULL,
       health_status TEXT NOT NULL,
-      updated_at TEXT DEFAULT (datetime('now')),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       UNIQUE(user_id, component_id)
     )
   `);
 
   // User racks (multiple racks per user with position)
-  database.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS user_racks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL,
       rack_id TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -109,15 +114,15 @@ function initializeDatabase(database: Database.Database): void {
       show_wire_decks INTEGER DEFAULT 1,
       show_pallets INTEGER DEFAULT 0,
       pallet_fill INTEGER DEFAULT 70,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       UNIQUE(user_id, rack_id)
     )
   `);
 
   // Create indexes
-  database.exec(`
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_maintenance_user ON maintenance_records(user_id);
     CREATE INDEX IF NOT EXISTS idx_maintenance_component ON maintenance_records(user_id, component_id);
     CREATE INDEX IF NOT EXISTS idx_health_user ON component_health(user_id);
@@ -133,29 +138,28 @@ export interface User {
   created_at: string;
 }
 
-export function createUser(email: string, passwordHash: string): User {
-  const db = getDb();
-  const stmt = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)');
-  const result = stmt.run(email, passwordHash);
-
-  return {
-    id: result.lastInsertRowid as number,
-    email,
-    password_hash: passwordHash,
-    created_at: new Date().toISOString(),
-  };
+export async function createUser(email: string, passwordHash: string): Promise<User> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query(
+    'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING *',
+    [email, passwordHash]
+  );
+  return result.rows[0];
 }
 
-export function getUserByEmail(email: string): User | null {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM users WHERE email = ?');
-  return stmt.get(email) as User | null;
+export async function getUserByEmail(email: string): Promise<User | null> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+  return result.rows[0] || null;
 }
 
-export function getUserById(id: number): User | null {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM users WHERE id = ?');
-  return stmt.get(id) as User | null;
+export async function getUserById(id: number): Promise<User | null> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return result.rows[0] || null;
 }
 
 // Config operations
@@ -177,19 +181,20 @@ export interface DbConfig {
   pallet_fill: number;
 }
 
-export function getConfigByUserId(userId: number): DbConfig | null {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM user_configs WHERE user_id = ?');
-  return stmt.get(userId) as DbConfig | null;
+export async function getConfigByUserId(userId: number): Promise<DbConfig | null> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM user_configs WHERE user_id = $1', [userId]);
+  return result.rows[0] || null;
 }
 
-export function createDefaultConfig(userId: number): void {
-  const db = getDb();
-  const stmt = db.prepare('INSERT INTO user_configs (user_id) VALUES (?)');
-  stmt.run(userId);
+export async function createDefaultConfig(userId: number): Promise<void> {
+  await ensureInitialized();
+  const pool = getPool();
+  await pool.query('INSERT INTO user_configs (user_id) VALUES ($1)', [userId]);
 }
 
-export function updateConfig(userId: number, config: {
+export async function updateConfig(userId: number, config: {
   bays: number;
   levels: number;
   bayWidth: number;
@@ -203,31 +208,31 @@ export function updateConfig(userId: number, config: {
   showWireDecks: boolean;
   showPallets: boolean;
   palletFill: number;
-}): void {
-  const db = getDb();
-  const stmt = db.prepare(`
+}): Promise<void> {
+  await ensureInitialized();
+  const pool = getPool();
+  await pool.query(`
     INSERT INTO user_configs (
       user_id, bays, levels, bay_width, bay_depth, level_height,
       beam_color, frame_color, pallet_color, crossbar_color, wire_deck_color,
       show_wire_decks, show_pallets, pallet_fill, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
     ON CONFLICT(user_id) DO UPDATE SET
-      bays = excluded.bays,
-      levels = excluded.levels,
-      bay_width = excluded.bay_width,
-      bay_depth = excluded.bay_depth,
-      level_height = excluded.level_height,
-      beam_color = excluded.beam_color,
-      frame_color = excluded.frame_color,
-      pallet_color = excluded.pallet_color,
-      crossbar_color = excluded.crossbar_color,
-      wire_deck_color = excluded.wire_deck_color,
-      show_wire_decks = excluded.show_wire_decks,
-      show_pallets = excluded.show_pallets,
-      pallet_fill = excluded.pallet_fill,
-      updated_at = datetime('now')
-  `);
-  stmt.run(
+      bays = EXCLUDED.bays,
+      levels = EXCLUDED.levels,
+      bay_width = EXCLUDED.bay_width,
+      bay_depth = EXCLUDED.bay_depth,
+      level_height = EXCLUDED.level_height,
+      beam_color = EXCLUDED.beam_color,
+      frame_color = EXCLUDED.frame_color,
+      pallet_color = EXCLUDED.pallet_color,
+      crossbar_color = EXCLUDED.crossbar_color,
+      wire_deck_color = EXCLUDED.wire_deck_color,
+      show_wire_decks = EXCLUDED.show_wire_decks,
+      show_pallets = EXCLUDED.show_pallets,
+      pallet_fill = EXCLUDED.pallet_fill,
+      updated_at = NOW()
+  `, [
     userId,
     config.bays,
     config.levels,
@@ -242,7 +247,7 @@ export function updateConfig(userId: number, config: {
     config.showWireDecks ? 1 : 0,
     config.showPallets ? 1 : 0,
     config.palletFill
-  );
+  ]);
 }
 
 // Maintenance records operations
@@ -255,16 +260,20 @@ export interface DbMaintenanceRecord {
   technician: string | null;
   status: string;
   timestamp: string;
-  images: string; // JSON array of image paths
+  images: string;
 }
 
-export function getMaintenanceRecordsByUserId(userId: number): DbMaintenanceRecord[] {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM maintenance_records WHERE user_id = ? ORDER BY timestamp DESC');
-  return stmt.all(userId) as DbMaintenanceRecord[];
+export async function getMaintenanceRecordsByUserId(userId: number): Promise<DbMaintenanceRecord[]> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query(
+    'SELECT * FROM maintenance_records WHERE user_id = $1 ORDER BY timestamp DESC',
+    [userId]
+  );
+  return result.rows;
 }
 
-export function saveMaintenanceRecords(userId: number, records: Record<string, Array<{
+export async function saveMaintenanceRecords(userId: number, records: Record<string, Array<{
   id: number;
   type: string;
   description: string;
@@ -272,23 +281,24 @@ export function saveMaintenanceRecords(userId: number, records: Record<string, A
   status: string;
   timestamp: string;
   images?: string[];
-}>>): void {
-  const db = getDb();
+}>>): Promise<void> {
+  await ensureInitialized();
+  const pool = getPool();
+  const client = await pool.connect();
 
-  // Delete existing records for user
-  const deleteStmt = db.prepare('DELETE FROM maintenance_records WHERE user_id = ?');
+  try {
+    await client.query('BEGIN');
 
-  // Insert new records
-  const insertStmt = db.prepare(`
-    INSERT INTO maintenance_records (user_id, component_id, type, description, technician, status, timestamp, images)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+    // Delete existing records for user
+    await client.query('DELETE FROM maintenance_records WHERE user_id = $1', [userId]);
 
-  const transaction = db.transaction(() => {
-    deleteStmt.run(userId);
+    // Insert new records
     for (const [componentId, componentRecords] of Object.entries(records)) {
       for (const record of componentRecords) {
-        insertStmt.run(
+        await client.query(`
+          INSERT INTO maintenance_records (user_id, component_id, type, description, technician, status, timestamp, images)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [
           userId,
           componentId,
           record.type,
@@ -297,12 +307,17 @@ export function saveMaintenanceRecords(userId: number, records: Record<string, A
           record.status,
           record.timestamp,
           JSON.stringify(record.images || [])
-        );
+        ]);
       }
     }
-  });
 
-  transaction();
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // Component health operations
@@ -313,32 +328,39 @@ export interface DbComponentHealth {
   health_status: string;
 }
 
-export function getComponentHealthByUserId(userId: number): DbComponentHealth[] {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM component_health WHERE user_id = ?');
-  return stmt.all(userId) as DbComponentHealth[];
+export async function getComponentHealthByUserId(userId: number): Promise<DbComponentHealth[]> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM component_health WHERE user_id = $1', [userId]);
+  return result.rows;
 }
 
-export function saveComponentHealth(userId: number, health: Record<string, string>): void {
-  const db = getDb();
+export async function saveComponentHealth(userId: number, health: Record<string, string>): Promise<void> {
+  await ensureInitialized();
+  const pool = getPool();
+  const client = await pool.connect();
 
-  // Delete existing health records for user
-  const deleteStmt = db.prepare('DELETE FROM component_health WHERE user_id = ?');
+  try {
+    await client.query('BEGIN');
 
-  // Insert new health records
-  const insertStmt = db.prepare(`
-    INSERT INTO component_health (user_id, component_id, health_status, updated_at)
-    VALUES (?, ?, ?, datetime('now'))
-  `);
+    // Delete existing health records for user
+    await client.query('DELETE FROM component_health WHERE user_id = $1', [userId]);
 
-  const transaction = db.transaction(() => {
-    deleteStmt.run(userId);
+    // Insert new health records
     for (const [componentId, healthStatus] of Object.entries(health)) {
-      insertStmt.run(userId, componentId, healthStatus);
+      await client.query(`
+        INSERT INTO component_health (user_id, component_id, health_status, updated_at)
+        VALUES ($1, $2, $3, NOW())
+      `, [userId, componentId, healthStatus]);
     }
-  });
 
-  transaction();
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // Rack operations
@@ -387,10 +409,11 @@ export interface RackData {
   };
 }
 
-export function getRacksByUserId(userId: number): RackData[] {
-  const db = getDb();
-  const stmt = db.prepare('SELECT * FROM user_racks WHERE user_id = ?');
-  const rows = stmt.all(userId) as DbRack[];
+export async function getRacksByUserId(userId: number): Promise<RackData[]> {
+  await ensureInitialized();
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM user_racks WHERE user_id = $1', [userId]);
+  const rows = result.rows as DbRack[];
 
   return rows.map((row) => ({
     id: row.rack_id,
@@ -415,26 +438,27 @@ export function getRacksByUserId(userId: number): RackData[] {
   }));
 }
 
-export function saveRacks(userId: number, racks: RackData[]): void {
-  const db = getDb();
+export async function saveRacks(userId: number, racks: RackData[]): Promise<void> {
+  await ensureInitialized();
+  const pool = getPool();
+  const client = await pool.connect();
 
-  // Delete existing racks for user
-  const deleteStmt = db.prepare('DELETE FROM user_racks WHERE user_id = ?');
+  try {
+    await client.query('BEGIN');
 
-  // Insert new racks
-  const insertStmt = db.prepare(`
-    INSERT INTO user_racks (
-      user_id, rack_id, name, position_x, position_z, rotation,
-      bays, levels, bay_width, bay_depth, level_height,
-      beam_color, frame_color, pallet_color, crossbar_color, wire_deck_color,
-      show_wire_decks, show_pallets, pallet_fill
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+    // Delete existing racks for user
+    await client.query('DELETE FROM user_racks WHERE user_id = $1', [userId]);
 
-  const transaction = db.transaction(() => {
-    deleteStmt.run(userId);
+    // Insert new racks
     for (const rack of racks) {
-      insertStmt.run(
+      await client.query(`
+        INSERT INTO user_racks (
+          user_id, rack_id, name, position_x, position_z, rotation,
+          bays, levels, bay_width, bay_depth, level_height,
+          beam_color, frame_color, pallet_color, crossbar_color, wire_deck_color,
+          show_wire_decks, show_pallets, pallet_fill
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+      `, [
         userId,
         rack.id,
         rack.name,
@@ -454,9 +478,14 @@ export function saveRacks(userId: number, racks: RackData[]): void {
         rack.config.showWireDecks ? 1 : 0,
         rack.config.showPallets ? 1 : 0,
         rack.config.palletFill
-      );
+      ]);
     }
-  });
 
-  transaction();
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }

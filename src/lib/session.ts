@@ -30,7 +30,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     return null;
   }
 
-  const user = getUserById(payload.userId);
+  const user = await getUserById(payload.userId);
   if (!user) {
     return null;
   }

@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     }
 
     // Find user
-    const user = getUserByEmail(email);
+    const user = await getUserByEmail(email);
     if (!user) {
       return NextResponse.json(
         { success: false, error: 'Invalid credentials' },

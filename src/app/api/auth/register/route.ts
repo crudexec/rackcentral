@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     }
 
     // Check if user already exists
-    const existingUser = getUserByEmail(email);
+    const existingUser = await getUserByEmail(email);
     if (existingUser) {
       return NextResponse.json(
         { success: false, error: 'Email already registered' },
@@ -40,10 +40,10 @@ export async function POST(request: Request) {
 
     // Create user
     const passwordHash = await hashPassword(password);
-    const user = createUser(email, passwordHash);
+    const user = await createUser(email, passwordHash);
 
     // Create default config for user
-    createDefaultConfig(user.id);
+    await createDefaultConfig(user.id);
 
     // Create session token
     const token = await createToken({ userId: user.id, email: user.email });
