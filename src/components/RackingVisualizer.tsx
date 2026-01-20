@@ -1115,6 +1115,62 @@ export default function RackingMaintenanceVisualizer() {
     setCameraDistance(prev => Math.max(5, Math.min(50, prev + e.deltaY * 0.01)));
   };
 
+  // Touch support for iPad
+  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+  const lastPinchDistanceRef = useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      // Single touch - start rotation
+      lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      setIsDragging(true);
+    } else if (e.touches.length === 2) {
+      // Two fingers - start pinch zoom
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDistanceRef.current = Math.sqrt(dx * dx + dy * dy);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault(); // Prevent page scrolling
+
+    if (e.touches.length === 1 && lastTouchRef.current) {
+      // Single touch - rotate camera
+      const deltaX = e.touches[0].clientX - lastTouchRef.current.x;
+      const deltaY = e.touches[0].clientY - lastTouchRef.current.y;
+
+      setCameraAngle(prev => ({
+        theta: prev.theta - deltaX * 0.01,
+        phi: Math.max(0.1, Math.min(Math.PI / 2 - 0.1, prev.phi + deltaY * 0.01)),
+      }));
+
+      lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    } else if (e.touches.length === 2 && lastPinchDistanceRef.current !== null) {
+      // Two fingers - pinch to zoom
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      const delta = lastPinchDistanceRef.current - distance;
+      setCameraDistance(prev => Math.max(5, Math.min(50, prev + delta * 0.05)));
+
+      lastPinchDistanceRef.current = distance;
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length === 0) {
+      lastTouchRef.current = null;
+      lastPinchDistanceRef.current = null;
+      setIsDragging(false);
+    } else if (e.touches.length === 1) {
+      // Switched from pinch to single touch
+      lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      lastPinchDistanceRef.current = null;
+    }
+  };
+
   const updateConfig = (key: keyof Config, value: number | string | boolean) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   };
@@ -2744,13 +2800,16 @@ export default function RackingMaintenanceVisualizer() {
       <div className="flex-1 relative">
         <div
           ref={containerRef}
-          className="w-full h-full cursor-grab active:cursor-grabbing"
+          className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
           onClick={handleClick}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         />
         
         {/* Camera Presets */}
