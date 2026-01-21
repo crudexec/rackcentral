@@ -13,6 +13,8 @@ interface Config {
   bayWidth: number;
   bayDepth: number;
   levelHeight: number;
+  uprightHeight: number;  // fixed height of uprights
+  floorPositions: number[];  // per-bay floor/base position (Y offset for L1)
   levelHeights?: number[];  // deprecated, kept for migration
   openingHeights?: number[][];  // deprecated, kept for migration
   beamPositions: number[][];  // 2D array: [bayIndex][levelIndex] = Y position from floor
@@ -77,6 +79,8 @@ const defaultConfig: Config = {
   bayWidth: 2.7,
   bayDepth: 1.2,
   levelHeight: 1.5,
+  uprightHeight: 6.5,  // fixed upright height
+  floorPositions: [0, 0, 0],  // per-bay floor position (Y offset)
   beamPositions: [
     [1.5, 3.0, 4.5, 6.0],  // Bay 0: beam Y positions
     [1.5, 3.0, 4.5, 6.0],  // Bay 1: beam Y positions
@@ -240,10 +244,12 @@ export default function RackingMaintenanceVisualizer() {
         if (racksRes.ok) {
           const { racks: loadedRacks } = await racksRes.json();
           if (loadedRacks && loadedRacks.length > 0) {
-            // Migrate old configs to beamPositions 2D array
+            // Migrate old configs
             const migratedRacks = loadedRacks.map((rack: Rack) => {
-              if (!rack.config.beamPositions) {
-                // Convert opening heights to beam positions
+              let config = { ...rack.config };
+
+              // Migrate to beamPositions if needed
+              if (!config.beamPositions) {
                 const openingHeightsToCumulative = (openings: number[]): number[] => {
                   let cumulative = 0;
                   return openings.map(h => {
@@ -252,26 +258,30 @@ export default function RackingMaintenanceVisualizer() {
                   });
                 };
 
-                let beamPositions: number[][];
-                if (rack.config.openingHeights) {
-                  // Convert openingHeights to beamPositions
-                  beamPositions = rack.config.openingHeights.map(openingHeightsToCumulative);
+                if (config.openingHeights) {
+                  config.beamPositions = config.openingHeights.map(openingHeightsToCumulative);
                 } else {
-                  // Fallback to levelHeights or levelHeight
-                  const levelHeights = rack.config.levelHeights ||
-                    Array(rack.config.levels).fill(rack.config.levelHeight);
+                  const levelHeights = config.levelHeights ||
+                    Array(config.levels).fill(config.levelHeight);
                   const positions = openingHeightsToCumulative(levelHeights);
-                  beamPositions = Array(rack.config.bays).fill(null).map(() => [...positions]);
+                  config.beamPositions = Array(config.bays).fill(null).map(() => [...positions]);
                 }
-                return {
-                  ...rack,
-                  config: {
-                    ...rack.config,
-                    beamPositions,
-                  },
-                };
               }
-              return rack;
+
+              // Add uprightHeight if missing (default: max beam position + 0.5m)
+              if (config.uprightHeight === undefined) {
+                const maxBeamPos = Math.max(...config.beamPositions.map((bay: number[]) =>
+                  bay[bay.length - 1] || 0
+                ));
+                config.uprightHeight = maxBeamPos + 0.5;
+              }
+
+              // Add floorPositions if missing (default: 0 for all bays)
+              if (!config.floorPositions) {
+                config.floorPositions = Array(config.bays).fill(0);
+              }
+
+              return { ...rack, config };
             });
             setRacks(migratedRacks);
             setSelectedRackId(migratedRacks[0].id);
@@ -737,12 +747,19 @@ export default function RackingMaintenanceVisualizer() {
       const { bays, levels, bayWidth, bayDepth, levelHeight, beamPositions, beamColor, frameColor, palletColor, crossbarColor, wireDeckColor, showWireDecks, showPallets, palletFill } = rack.config;
       const isSelectedRack = rack.id === selectedRackId;
 
-      // Ensure beamPositions exists (2D array: [bay][level] = Y position)
-      // Generate default positions if not present
+      // Get floor positions and beam positions from config
+      const defaultFloorPositions = Array(bays).fill(0);
+      const floors = rack.config.floorPositions || defaultFloorPositions;
+
       const defaultPositions = Array(bays).fill(null).map(() =>
         Array(levels).fill(0).map((_, i) => (i + 1) * levelHeight)
       );
       const positions2D = beamPositions || defaultPositions;
+
+      // Get floor position for a bay
+      const getFloorPosition = (bay: number): number => {
+        return floors[bay] ?? 0;
+      };
 
       // Get beam Y position for a specific bay and level (1-indexed level)
       const getBeamPosition = (bay: number, level: number): number => {
@@ -753,7 +770,7 @@ export default function RackingMaintenanceVisualizer() {
       // Get opening height between two beams (or floor and first beam)
       const getOpeningHeight = (bay: number, level: number): number => {
         const currentPos = getBeamPosition(bay, level);
-        const prevPos = level > 1 ? getBeamPosition(bay, level - 1) : 0;
+        const prevPos = level > 1 ? getBeamPosition(bay, level - 1) : getFloorPosition(bay);
         return currentPos - prevPos;
       };
 
@@ -765,18 +782,16 @@ export default function RackingMaintenanceVisualizer() {
 
       const uprightWidth = 0.08;
       const uprightDepth = 0.08;
-      // Uprights need to be tall enough for the tallest bay
-      const maxTotalHeight = Math.max(...positions2D.map((bayPositions: number[]) =>
+      // Use fixed upright height from config
+      const fixedUprightHeight = rack.config.uprightHeight || (Math.max(...positions2D.map((bayPositions: number[]) =>
         bayPositions[bayPositions.length - 1] || 0
-      )) + 0.3;
+      )) + 0.5);
 
       for (let bay = 0; bay <= bays; bay++) {
         const xPos = bay * bayWidth;
 
-        // Calculate upright height based on tallest adjacent bay
-        const leftBayHeight = bay > 0 ? getBayTotalHeight(bay - 1) : 0;
-        const rightBayHeight = bay < bays ? getBayTotalHeight(bay) : 0;
-        const uprightHeight = Math.max(leftBayHeight, rightBayHeight) + 0.3;
+        // Use fixed upright height for all uprights
+        const currentUprightHeight = fixedUprightHeight;
 
         (['front', 'back'] as const).forEach((side) => {
           const componentId = `${rack.id}-upright-${bay}-${side}`;
@@ -784,10 +799,10 @@ export default function RackingMaintenanceVisualizer() {
           const isSelected = selectedComponent === componentId;
 
           const upright = new THREE.Mesh(
-            new THREE.BoxGeometry(uprightWidth, uprightHeight, uprightDepth),
+            new THREE.BoxGeometry(uprightWidth, currentUprightHeight, uprightDepth),
             createMaterial(frameColor, componentId, isSelected, hasRecords)
           );
-          upright.position.set(xPos, uprightHeight / 2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
+          upright.position.set(xPos, currentUprightHeight / 2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
           upright.castShadow = true;
           upright.userData = {
             componentId,
@@ -805,7 +820,7 @@ export default function RackingMaintenanceVisualizer() {
             const indicatorGeom = new THREE.SphereGeometry(0.1, 16, 16);
             const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xff6600 });
             const indicator = new THREE.Mesh(indicatorGeom, indicatorMat);
-            indicator.position.set(xPos, uprightHeight + 0.2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
+            indicator.position.set(xPos, currentUprightHeight + 0.2, side === 'front' ? bayDepth / 2 : -bayDepth / 2);
             indicator.userData = { isIndicator: true, parentId: componentId };
             rackGroup.add(indicator);
           }
@@ -827,7 +842,7 @@ export default function RackingMaintenanceVisualizer() {
           brace.rotation.x = Math.PI / 2 - angle;
           // Position at middle of the opening
           const beamY = getBeamPosition(braceBay, level);
-          const prevBeamY = level > 1 ? getBeamPosition(braceBay, level - 1) : 0;
+          const prevBeamY = level > 1 ? getBeamPosition(braceBay, level - 1) : getFloorPosition(braceBay);
           brace.position.set(xPos, (beamY + prevBeamY) / 2 + 0.15, 0);
           brace.userData = {
             componentId,
@@ -852,9 +867,11 @@ export default function RackingMaintenanceVisualizer() {
           const hasRecords = (maintenanceRecords[componentId]?.length || 0) > 0;
           const isSelected = selectedComponent === componentId;
 
-          // Get beam positions from adjacent bays (level 0 = floor)
-          const leftY = bay > 0 && level > 0 ? getBeamPosition(bay - 1, level) : (level === 0 ? 0 : null);
-          const rightY = bay < bays && level > 0 ? getBeamPosition(bay, level) : (level === 0 ? 0 : null);
+          // Get beam positions from adjacent bays (level 0 = floor position)
+          const leftFloor = bay > 0 ? getFloorPosition(bay - 1) : 0;
+          const rightFloor = bay < bays ? getFloorPosition(bay) : 0;
+          const leftY = bay > 0 && level > 0 ? getBeamPosition(bay - 1, level) : (level === 0 ? leftFloor : null);
+          const rightY = bay < bays && level > 0 ? getBeamPosition(bay, level) : (level === 0 ? rightFloor : null);
           const yPos = (leftY !== null && rightY !== null) ? Math.max(leftY, rightY) : (leftY ?? rightY ?? 0);
           const connectorY = yPos + 0.15;
           const connector = new THREE.Mesh(
@@ -1303,8 +1320,9 @@ export default function RackingMaintenanceVisualizer() {
         );
 
       const currentPositions = prev.beamPositions || generateDefaultPositions(prev.bays, prev.levels);
+      const currentFloors = prev.floorPositions || Array(prev.bays).fill(0);
 
-      // Sync beamPositions 2D array when bays or levels count changes
+      // Sync arrays when bays or levels count changes
       if (key === 'bays' && typeof value === 'number') {
         if (value > currentPositions.length) {
           // Add more bays with default positions
@@ -1312,9 +1330,12 @@ export default function RackingMaintenanceVisualizer() {
             Array(prev.levels).fill(0).map((_, i) => (i + 1) * prev.levelHeight)
           );
           updated.beamPositions = [...currentPositions, ...newBays];
+          // Add floor positions for new bays
+          updated.floorPositions = [...currentFloors, ...Array(value - currentFloors.length).fill(0)];
         } else if (value < currentPositions.length) {
           // Remove excess bays
           updated.beamPositions = currentPositions.slice(0, value);
+          updated.floorPositions = currentFloors.slice(0, value);
         }
       } else if (key === 'levels' && typeof value === 'number') {
         // Update each bay's level count
@@ -1343,18 +1364,29 @@ export default function RackingMaintenanceVisualizer() {
         Array(prev.levels).fill(0).map((_, i) => (i + 1) * prev.levelHeight)
       );
       const currentPositions = prev.beamPositions || defaultPositions;
+      const currentFloors = prev.floorPositions || Array(prev.bays).fill(0);
 
       const newPositions = currentPositions.map((bayPositions, bIdx) => {
         if (bIdx === bayIndex) {
           const newBayPositions = [...bayPositions];
-          // Calculate new beam position: previous beam position + new opening height
-          const prevBeamPos = levelIndex > 0 ? newBayPositions[levelIndex - 1] : 0;
+          // Calculate new beam position: previous beam position (or floor) + new opening height
+          const prevBeamPos = levelIndex > 0 ? newBayPositions[levelIndex - 1] : currentFloors[bayIndex];
           newBayPositions[levelIndex] = prevBeamPos + value;
           return newBayPositions;
         }
         return bayPositions;
       });
       return { ...prev, beamPositions: newPositions };
+    });
+  };
+
+  // Update floor position for a bay
+  const updateFloorPosition = (bayIndex: number, value: number) => {
+    setConfig(prev => {
+      const currentFloors = prev.floorPositions || Array(prev.bays).fill(0);
+      const newFloors = [...currentFloors];
+      newFloors[bayIndex] = value;
+      return { ...prev, floorPositions: newFloors };
     });
   };
 
@@ -1883,10 +1915,12 @@ export default function RackingMaintenanceVisualizer() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string);
-        // Migration helper for beamPositions
+        // Migration helper
         const migrateConfig = (cfg: Config): Config => {
-          if (!cfg.beamPositions) {
-            // Convert opening heights to beam positions (cumulative)
+          let migrated = { ...cfg };
+
+          // Migrate to beamPositions if needed
+          if (!migrated.beamPositions) {
             const openingHeightsToCumulative = (openings: number[]): number[] => {
               let cumulative = 0;
               return openings.map(h => {
@@ -1895,17 +1929,29 @@ export default function RackingMaintenanceVisualizer() {
               });
             };
 
-            let beamPositions: number[][];
-            if (cfg.openingHeights) {
-              beamPositions = cfg.openingHeights.map(openingHeightsToCumulative);
+            if (migrated.openingHeights) {
+              migrated.beamPositions = migrated.openingHeights.map(openingHeightsToCumulative);
             } else {
-              const levelHeights = cfg.levelHeights || Array(cfg.levels).fill(cfg.levelHeight);
+              const levelHeights = migrated.levelHeights || Array(migrated.levels).fill(migrated.levelHeight);
               const positions = openingHeightsToCumulative(levelHeights);
-              beamPositions = Array(cfg.bays).fill(null).map(() => [...positions]);
+              migrated.beamPositions = Array(migrated.bays).fill(null).map(() => [...positions]);
             }
-            return { ...cfg, beamPositions };
           }
-          return cfg;
+
+          // Add uprightHeight if missing
+          if (migrated.uprightHeight === undefined) {
+            const maxBeamPos = Math.max(...migrated.beamPositions.map((bay: number[]) =>
+              bay[bay.length - 1] || 0
+            ));
+            migrated.uprightHeight = maxBeamPos + 0.5;
+          }
+
+          // Add floorPositions if missing
+          if (!migrated.floorPositions) {
+            migrated.floorPositions = Array(migrated.bays).fill(0);
+          }
+
+          return migrated;
         };
         // Support both old format (config) and new format (racks)
         if (data.racks && Array.isArray(data.racks)) {
@@ -2349,6 +2395,19 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
+                          <span className="text-xs text-gray-400">Upright Height: {(detailRack.config.uprightHeight || 6.5).toFixed(1)}m</span>
+                          <input
+                            type="range"
+                            min="3"
+                            max="12"
+                            step="0.5"
+                            value={detailRack.config.uprightHeight || 6.5}
+                            onChange={(e) => updateConfig('uprightHeight', parseFloat(e.target.value))}
+                            className="w-full accent-orange-500"
+                          />
+                        </div>
+
+                        <div>
                           <span className="text-xs text-gray-400 block mb-2">Opening Heights (per bay)</span>
                           {/* Bay Selector */}
                           <div className="flex gap-1 mb-2 flex-wrap">
@@ -2376,27 +2435,47 @@ export default function RackingMaintenanceVisualizer() {
                               const positions = detailRack.config.beamPositions || defaultPositions;
                               const bayIdx = Math.min(selectedConfigBay, positions.length - 1);
                               const bayPositions = positions[bayIdx] || defaultPositions[0];
+                              const floorPositions = detailRack.config.floorPositions || Array(detailRack.config.bays).fill(0);
+                              const floorPos = floorPositions[bayIdx] ?? 0;
 
-                              // Calculate opening heights from positions
-                              return bayPositions.map((pos: number, levelIdx: number) => {
-                                const prevPos = levelIdx > 0 ? bayPositions[levelIdx - 1] : 0;
-                                const openingHeight = pos - prevPos;
-                                return (
-                                  <div key={levelIdx} className="flex items-center gap-2">
-                                    <span className="text-xs text-gray-500 w-12">L{levelIdx + 1}:</span>
+                              return (
+                                <>
+                                  {/* Floor Position */}
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-gray-500 w-12">Floor:</span>
                                     <input
                                       type="range"
-                                      min="0.8"
-                                      max="3"
+                                      min="0"
+                                      max="1"
                                       step="0.1"
-                                      value={openingHeight}
-                                      onChange={(e) => updateOpeningHeight(bayIdx, levelIdx, parseFloat(e.target.value))}
+                                      value={floorPos}
+                                      onChange={(e) => updateFloorPosition(bayIdx, parseFloat(e.target.value))}
                                       className="flex-1 accent-orange-500"
                                     />
-                                    <span className="text-xs text-gray-400 w-12">{openingHeight.toFixed(1)}m</span>
+                                    <span className="text-xs text-gray-400 w-12">{floorPos.toFixed(1)}m</span>
                                   </div>
-                                );
-                              });
+                                  {/* Calculate opening heights from positions */}
+                                  {bayPositions.map((pos: number, levelIdx: number) => {
+                                    const prevPos = levelIdx > 0 ? bayPositions[levelIdx - 1] : floorPos;
+                                    const openingHeight = pos - prevPos;
+                                    return (
+                                      <div key={levelIdx} className="flex items-center gap-2">
+                                        <span className="text-xs text-gray-500 w-12">L{levelIdx + 1}:</span>
+                                        <input
+                                          type="range"
+                                          min="0.8"
+                                          max="3"
+                                          step="0.1"
+                                          value={openingHeight}
+                                          onChange={(e) => updateOpeningHeight(bayIdx, levelIdx, parseFloat(e.target.value))}
+                                          className="flex-1 accent-orange-500"
+                                        />
+                                        <span className="text-xs text-gray-400 w-12">{openingHeight.toFixed(1)}m</span>
+                                      </div>
+                                    );
+                                  })}
+                                </>
+                              );
                             })()}
                           </div>
                         </div>
