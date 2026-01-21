@@ -73,6 +73,32 @@ interface ComponentUserData {
   rackName?: string;
 }
 
+// Unit conversion helpers (internal storage is in meters)
+const METERS_TO_FEET = 3.28084;
+const FEET_TO_METERS = 0.3048;
+
+// Convert meters to feet (decimal)
+const metersToFeet = (meters: number): number => meters * METERS_TO_FEET;
+
+// Convert feet to meters
+const feetToMeters = (feet: number): number => feet * FEET_TO_METERS;
+
+// Convert meters to feet and inches string (e.g., "6' 6\"")
+const metersToFeetInches = (meters: number): string => {
+  const totalInches = meters * METERS_TO_FEET * 12;
+  const feet = Math.floor(totalInches / 12);
+  const inches = Math.round(totalInches % 12);
+  if (inches === 12) {
+    return `${feet + 1}' 0"`;
+  }
+  return `${feet}' ${inches}"`;
+};
+
+// Convert feet and inches to meters (accepts decimal feet)
+const feetInchesToMeters = (feet: number, inches: number = 0): number => {
+  return (feet + inches / 12) * FEET_TO_METERS;
+};
+
 const defaultConfig: Config = {
   bays: 3,
   levels: 4,
@@ -2234,20 +2260,20 @@ export default function RackingMaintenanceVisualizer() {
                           <p className="text-white font-medium">{detailRack.config.bays} bays × {detailRack.config.levels} levels</p>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-400">Dimensions</p>
+                          <p className="text-xs text-gray-400">Dimensions (W × D × H)</p>
                           <p className="text-white font-medium">
-                            {(detailRack.config.bays * detailRack.config.bayWidth).toFixed(1)}m × {detailRack.config.bayDepth}m × {(() => {
+                            {metersToFeetInches(detailRack.config.bays * detailRack.config.bayWidth)} × {metersToFeetInches(detailRack.config.bayDepth)} × {(() => {
                               const defaultPos = Array(detailRack.config.bays).fill(null).map(() =>
                                 Array(detailRack.config.levels).fill(0).map((_, i) => (i + 1) * detailRack.config.levelHeight)
                               );
                               const positions = detailRack.config.beamPositions || defaultPos;
-                              return Math.max(...positions.map((bay: number[]) => bay[bay.length - 1] || 0)).toFixed(1);
-                            })()}m
+                              return metersToFeetInches(Math.max(...positions.map((bay: number[]) => bay[bay.length - 1] || 0)));
+                            })()}
                           </p>
                         </div>
                         <div>
                           <p className="text-xs text-gray-400">Position</p>
-                          <p className="text-white font-medium">X: {detailRack.position.x.toFixed(1)}m, Z: {detailRack.position.z.toFixed(1)}m</p>
+                          <p className="text-white font-medium">X: {metersToFeetInches(detailRack.position.x)}, Z: {metersToFeetInches(detailRack.position.z)}</p>
                         </div>
                         <div>
                           <p className="text-xs text-gray-400">Rotation</p>
@@ -2301,24 +2327,24 @@ export default function RackingMaintenanceVisualizer() {
                       <h2 className="font-semibold text-blue-300 mb-3">📍 Position & Rotation</h2>
                       <div className="grid grid-cols-2 gap-4 mb-3">
                         <div>
-                          <span className="text-xs text-gray-400">X Position: {detailRack.position.x.toFixed(1)}m</span>
+                          <span className="text-xs text-gray-400">X Position: {metersToFeetInches(detailRack.position.x)}</span>
                           <input
                             type="range"
                             min="-30"
                             max="30"
-                            step="0.5"
+                            step="0.3048"
                             value={detailRack.position.x}
                             onChange={(e) => updateRackPosition(detailRack.id, parseFloat(e.target.value), detailRack.position.z)}
                             className="w-full accent-orange-500"
                           />
                         </div>
                         <div>
-                          <span className="text-xs text-gray-400">Z Position: {detailRack.position.z.toFixed(1)}m</span>
+                          <span className="text-xs text-gray-400">Z Position: {metersToFeetInches(detailRack.position.z)}</span>
                           <input
                             type="range"
                             min="-30"
                             max="30"
-                            step="0.5"
+                            step="0.3048"
                             value={detailRack.position.z}
                             onChange={(e) => updateRackPosition(detailRack.id, detailRack.position.x, parseFloat(e.target.value))}
                             className="w-full accent-orange-500"
@@ -2369,12 +2395,12 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
-                          <span className="text-xs text-gray-400">Bay Width: {detailRack.config.bayWidth.toFixed(1)}m</span>
+                          <span className="text-xs text-gray-400">Bay Width: {metersToFeetInches(detailRack.config.bayWidth)}</span>
                           <input
                             type="range"
-                            min="1.5"
-                            max="4"
-                            step="0.1"
+                            min={feetToMeters(4)}
+                            max={feetToMeters(14)}
+                            step={feetToMeters(0.5)}
                             value={detailRack.config.bayWidth}
                             onChange={(e) => updateConfig('bayWidth', parseFloat(e.target.value))}
                             className="w-full accent-orange-500"
@@ -2382,12 +2408,12 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
-                          <span className="text-xs text-gray-400">Bay Depth: {detailRack.config.bayDepth.toFixed(1)}m</span>
+                          <span className="text-xs text-gray-400">Bay Depth: {metersToFeetInches(detailRack.config.bayDepth)}</span>
                           <input
                             type="range"
-                            min="0.8"
-                            max="2"
-                            step="0.1"
+                            min={feetToMeters(2)}
+                            max={feetToMeters(8)}
+                            step={feetToMeters(0.5)}
                             value={detailRack.config.bayDepth}
                             onChange={(e) => updateConfig('bayDepth', parseFloat(e.target.value))}
                             className="w-full accent-orange-500"
@@ -2395,12 +2421,12 @@ export default function RackingMaintenanceVisualizer() {
                         </div>
 
                         <div>
-                          <span className="text-xs text-gray-400">Upright Height: {(detailRack.config.uprightHeight || 6.5).toFixed(1)}m</span>
+                          <span className="text-xs text-gray-400">Upright Height: {metersToFeetInches(detailRack.config.uprightHeight || 6.5)}</span>
                           <input
                             type="range"
-                            min="3"
-                            max="12"
-                            step="0.5"
+                            min={feetToMeters(8)}
+                            max={feetToMeters(40)}
+                            step={feetToMeters(1)}
                             value={detailRack.config.uprightHeight || 6.5}
                             onChange={(e) => updateConfig('uprightHeight', parseFloat(e.target.value))}
                             className="w-full accent-orange-500"
@@ -2446,13 +2472,13 @@ export default function RackingMaintenanceVisualizer() {
                                     <input
                                       type="range"
                                       min="0"
-                                      max="1"
-                                      step="0.1"
+                                      max={feetToMeters(3)}
+                                      step={feetToMeters(0.5)}
                                       value={floorPos}
                                       onChange={(e) => updateFloorPosition(bayIdx, parseFloat(e.target.value))}
                                       className="flex-1 accent-orange-500"
                                     />
-                                    <span className="text-xs text-gray-400 w-12">{floorPos.toFixed(1)}m</span>
+                                    <span className="text-xs text-gray-400 w-14">{metersToFeetInches(floorPos)}</span>
                                   </div>
                                   {/* Calculate opening heights from positions */}
                                   {bayPositions.map((pos: number, levelIdx: number) => {
@@ -2463,14 +2489,14 @@ export default function RackingMaintenanceVisualizer() {
                                         <span className="text-xs text-gray-500 w-12">L{levelIdx + 1}:</span>
                                         <input
                                           type="range"
-                                          min="0.8"
-                                          max="3"
-                                          step="0.1"
+                                          min={feetToMeters(2)}
+                                          max={feetToMeters(10)}
+                                          step={feetToMeters(0.5)}
                                           value={openingHeight}
                                           onChange={(e) => updateOpeningHeight(bayIdx, levelIdx, parseFloat(e.target.value))}
                                           className="flex-1 accent-orange-500"
                                         />
-                                        <span className="text-xs text-gray-400 w-12">{openingHeight.toFixed(1)}m</span>
+                                        <span className="text-xs text-gray-400 w-14">{metersToFeetInches(openingHeight)}</span>
                                       </div>
                                     );
                                   })}
