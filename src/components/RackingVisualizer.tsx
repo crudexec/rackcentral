@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import AnnotationEditor from './AnnotationEditor';
+import CADExport from './CADExport';
 
 interface Config {
   bays: number;
@@ -73,6 +74,12 @@ interface ComponentUserData {
   rackName?: string;
 }
 
+interface WarehouseConfig {
+  name: string;
+  width: number;   // in meters
+  depth: number;   // in meters
+}
+
 // Unit conversion helpers (internal storage is in meters)
 const METERS_TO_FEET = 3.28084;
 const FEET_TO_METERS = 0.3048;
@@ -97,6 +104,26 @@ const metersToFeetInches = (meters: number): string => {
 // Convert feet and inches to meters (accepts decimal feet)
 const feetInchesToMeters = (feet: number, inches: number = 0): number => {
   return (feet + inches / 12) * FEET_TO_METERS;
+};
+
+// Convert meters to inches
+const metersToInches = (meters: number): number => meters * METERS_TO_FEET * 12;
+
+// Format dimension for CAD drawing (inches with feet notation for large values)
+const formatDimensionInches = (meters: number): string => {
+  const totalInches = Math.round(meters * METERS_TO_FEET * 12);
+  if (totalInches >= 48) {
+    const feet = Math.floor(totalInches / 12);
+    const inches = totalInches % 12;
+    return `${feet}'-${inches}" [${totalInches}"]`;
+  }
+  return `${totalInches}"`;
+};
+
+const defaultWarehouseConfig: WarehouseConfig = {
+  name: 'Warehouse 1',
+  width: 30.48,   // 100 feet in meters
+  depth: 18.288,  // 60 feet in meters
 };
 
 const defaultConfig: Config = {
@@ -149,6 +176,10 @@ export default function RackingMaintenanceVisualizer() {
   const [racks, setRacks] = useState<Rack[]>([createNewRack('rack-1', 'Rack 1', 0, 0)]);
   const [selectedRackId, setSelectedRackId] = useState<string>('rack-1');
   const [isMovingRack, setIsMovingRack] = useState(false);
+
+  // Warehouse configuration
+  const [warehouseConfig, setWarehouseConfig] = useState<WarehouseConfig>(defaultWarehouseConfig);
+  const [showCADExport, setShowCADExport] = useState(false);
 
   // Get current selected rack's config
   const selectedRack = racks.find(r => r.id === selectedRackId) || racks[0];
@@ -2062,15 +2093,28 @@ export default function RackingMaintenanceVisualizer() {
   };
 
   const duplicateRack = (rackId: string) => {
-    const sourcRack = racks.find(r => r.id === rackId);
-    if (!sourcRack) return;
+    const sourceRack = racks.find(r => r.id === rackId);
+    if (!sourceRack) return;
 
     const newId = `rack-${Date.now()}`;
+    // Deep copy the config to avoid shared references
+    const newConfig: Config = {
+      ...sourceRack.config,
+      floorPositions: [...(sourceRack.config.floorPositions || [])],
+      beamPositions: (sourceRack.config.beamPositions || []).map(bay => [...bay]),
+      levelHeights: sourceRack.config.levelHeights ? [...sourceRack.config.levelHeights] : undefined,
+      openingHeights: sourceRack.config.openingHeights ? sourceRack.config.openingHeights.map(bay => [...bay]) : undefined,
+    };
+
     const newRack: Rack = {
-      ...sourcRack,
       id: newId,
-      name: `${sourcRack.name} (Copy)`,
-      position: { x: sourcRack.position.x + 5, z: sourcRack.position.z },
+      name: `${sourceRack.name} (Copy)`,
+      position: {
+        x: sourceRack.position.x + feetToMeters(10), // Offset by 10 feet
+        z: sourceRack.position.z
+      },
+      rotation: sourceRack.rotation,
+      config: newConfig,
     };
     setRacks([...racks, newRack]);
     setSelectedRackId(newId);
@@ -3416,6 +3460,22 @@ export default function RackingMaintenanceVisualizer() {
                   <p className="text-red-400 text-sm mt-2">{importError}</p>
                 )}
               </div>
+
+              <div className="bg-gray-700 rounded-lg p-4">
+                <h3 className="font-semibold text-blue-300 mb-2">CAD Drawing</h3>
+                <p className="text-sm text-gray-400 mb-3">
+                  Export AutoCAD-style floor plan and elevation drawings.
+                </p>
+                <button
+                  onClick={() => {
+                    setShowExportModal(false);
+                    setShowCADExport(true);
+                  }}
+                  className="w-full bg-purple-600 hover:bg-purple-500 text-white py-2 px-4 rounded font-medium transition-colors"
+                >
+                  📐 Open CAD Export
+                </button>
+              </div>
             </div>
 
             <button
@@ -3429,6 +3489,15 @@ export default function RackingMaintenanceVisualizer() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* CAD Export Modal */}
+      {showCADExport && (
+        <CADExport
+          racks={racks}
+          warehouseConfig={warehouseConfig}
+          onClose={() => setShowCADExport(false)}
+        />
       )}
 
       {/* Image Modal for viewing full-size images */}
